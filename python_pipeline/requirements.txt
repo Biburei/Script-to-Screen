@@ -1,0 +1,41 @@
+# Python Dependencies for Wan 1.3B Video Automation Pipeline
+# Optimized for Google Colab Free Tier (Tesla T4 GPU, 15GB VRAM, CUDA 12.1+)
+
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# Core PyTorch GPU packages
+torch>=2.1.0
+torchvision
+torchaudio>=2.1.0
+
+# Wan 1.3B Video Generation (Hugging Face Diffusers)
+diffusers>=0.30.0
+transformers>=4.40.0
+accelerate>=0.27.0
+safetensors>=0.4.0
+sentencepiece
+protobuf
+
+# Web & Utilities
+requests>=2.31.0
+praw>=7.7.1
+numpy>=1.24.0,<2.0.0
+scipy>=1.10.0
+soundfile>=0.12.1
+pillow>=10.0.0
+imageio>=2.30.0
+imageio-ffmpeg
+
+# Voiceover TTS (Kokoro 24kHz)
+kokoro>=0.3.1
+
+# Audio Transcription
+openai-whisper>=20231117
+
+# Video Assembly
+moviepy>=2.0.0.dev2
+ffmpeg-python>=0.2.0
+
+# Data Processing
+pandas
+openpyxl

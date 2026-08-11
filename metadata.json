@@ -1,0 +1,6 @@
+{
+  "name": "Script to Screen Automation Pipeline Studio",
+  "description": "A local Python and Web video automation pipeline studio for converting Reddit horror stories into vertical short video scripts, TTS narration, SD storyboard art, and kinetic captions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

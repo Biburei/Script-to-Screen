@@ -25,6 +25,8 @@ soundfile>=0.12.1
 pillow>=10.0.0
 imageio>=2.30.0
 imageio-ffmpeg
+bitsandbytes>=0.46.1
+
 
 # Voiceover TTS (Kokoro 24kHz)
 kokoro>=0.3.1

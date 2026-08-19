@@ -21,6 +21,8 @@ import sys
 import time
 import logging
 import random
+import wave
+import math
 import pandas as pd
 from pathlib import Path
 
@@ -41,19 +43,25 @@ except ImportError:
 from scraper import CreepypastaExcelLoader
 from agent_llm import LLMScriptWriter
 from tts_engine import KokoroTTSEngine, get_lang_code_for_voice
-from visuals import SDArtDirector
+from visuals import WanArtDirector
 from captions import WhisperCaptionAligner
 from assembler import MoviePyAssembler
 from config import (
     BASE_DIR, TEMP_DIR, EXPORTS_DIR, OPENROUTER_MODEL, KOKORO_VOICES, EXCEL_DATASET_PATH, get_random_num_scenes
 )
 
+# Safely import WAN configurations with defensive fallbacks
+try:
+    from config import WAN_FPS, WAN_NUM_FRAMES_FALLBACK
+except ImportError:
+    WAN_FPS = 16
+    WAN_NUM_FRAMES_FALLBACK = 33  # ~2 seconds fallback adhering to Wan formula
+
 
 def print_banner():
     banner = """
   =============================================================
-   👻 ARCHIVAL CREEPYPASTA SHORTS PIPELINE (LOCAL EXCEL ENGINE)
-   Optimized for NVIDIA RTX 3050 GPU & AMD Ryzen 7 CPU
+    ARCHIVAL CREEPYPASTA SHORTS PIPELINE (LOCAL EXCEL ENGINE)
   =============================================================
   """
     print(banner)
@@ -98,9 +106,7 @@ def run_pipeline(
 
     story_part = selected_story.get("part", part or 1)
     is_continuation = selected_story.get("is_continuation", story_part >= 2)
-    
-    # --- NEW: Extract Raw Tags for Visuals ---
-    # Try to find 'tags' explicitly, otherwise safely grab the very last column in the dictionary
+
     tags_key = 'tags' if 'tags' in selected_story else list(selected_story.keys())[-1]
     raw_tags = str(selected_story.get(tags_key, ""))
 
@@ -108,9 +114,8 @@ def run_pipeline(
     logger.info(f"Title: \"{selected_story.get('title', 'N/A')}\"")
     logger.info(f"Part Number: {story_part} (Continuation: {is_continuation})")
     logger.info(f"Genre: {selected_story.get('genre', 'Horror')}")
-    logger.info(f"Extracted Tags for Art Blueprint: [{raw_tags}]") # Log the extracted tags
+    logger.info(f"Extracted Tags for Art Blueprint: [{raw_tags}]") 
 
-    # Audit log run history
     if log_pipeline_run:
         log_pipeline_run({
             "run_id": f"run_{selected_story.get('id', 'N/A')}_{int(start_time)}",
@@ -122,10 +127,10 @@ def run_pipeline(
             "kokoro_voice": selected_voice,
             "kokoro_lang_code": selected_lang_code,
             "num_scenes": num_scenes,
-            "tags_used": raw_tags # Added tags to audit log
+            "tags_used": raw_tags 
         })
 
-    # STEP 2: OPENROUTER / LLM SCRIPT REWRITE (180-210 WORDS + PART HOOK/CLIFFHANGER)
+    # STEP 2: OPENROUTER / LLM SCRIPT 
     logger.info(f"\n--- STEP 2: LLM CREEPYPASTA REWRITE (Model: {openrouter_model}, Target: 180-210 words) ---")
     writer = LLMScriptWriter(model=openrouter_model)
     script_result = writer.rewrite_story(
@@ -146,14 +151,22 @@ def run_pipeline(
     audio_path = str(TEMP_DIR / f"voice_{selected_story.get('id', 'temp')}.wav")
     tts.synthesize_to_wav(script_with_pauses, audio_path)
 
+    audio_duration = 0.0
+    try:
+        with wave.open(audio_path, 'r') as wav_file:
+            audio_duration = wav_file.getnframes() / float(wav_file.getframerate())
+    except Exception as e:
+        logger.warning(f"Could not read audio duration: {e}")
+
     # STEP 4: WAN 1.3B TEXT-TO-VIDEO GENERATION
     logger.info(f"\n--- STEP 4: WAN 1.3B 9:16 TEXT-TO-VIDEO GENERATION ({num_scenes} clips) ---")
-    director = SDArtDirector()
+    director = WanArtDirector()
     image_paths = director.generate_storyboard(
         script_text=script_result['raw_script'],
         num_scenes=num_scenes,
         output_dir=str(TEMP_DIR / f"assets_{selected_story.get('id', 'temp')}"),
-        raw_tags=raw_tags  # <--- PASSING THE TAGS TO VISUALS.PY HERE!
+        raw_tags=raw_tags,
+        audio_duration=audio_duration
     )
 
     # STEP 5: WHISPER KINETIC TIMESTAMP ALIGNMENT

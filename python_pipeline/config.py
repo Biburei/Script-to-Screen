@@ -9,6 +9,7 @@ import re
 import pandas as pd
 from pathlib import Path
 from dotenv import load_dotenv
+from google.colab import userdata
 
 load_dotenv()
 
@@ -27,7 +28,7 @@ PIPELINE_STATE_FILE = DATA_DIR / "pipeline_state.json"
 
 def get_random_num_scenes() -> int:
     """Randomly pick the target number of visual scene splits between 5 and 8."""
-    return random.randint(5, 8)
+    return random.randint(5, 8)#when debbuging complete change to 10 to 15 --------------------------------HERE
 
 def get_num_scenes() -> int:
     return get_random_num_scenes()
@@ -54,10 +55,42 @@ MAX_POST_WORDS = 3000
 TARGET_SCRIPT_MIN_WORDS = 180
 TARGET_SCRIPT_MAX_WORDS = 210
 
-# OpenRouter LLM Settings
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+def load_required_key(key_name: str) -> str:
+    """
+    Reads API keys from environment variables first (CLI mode), 
+    then tries Colab secrets (Notebook mode). Crashes explicitly if missing.
+    """
+    # Check key passed via environment variable (works in !python main.py)
+    val = os.getenv(key_name)
+    if val and val.strip():
+        return val.strip()
+
+    # Try Colab Secrets if running directly in a notebook cell
+    try:
+        from google.colab import userdata
+        val = userdata.get(key_name)
+        if val and val.strip():
+            return val.strip()
+    except Exception:
+        pass  # Ignore kernel crash in subprocesses
+
+    # Fail explicitly if the key is missing in both places
+    raise ValueError(
+        f"\n❌ [CRITICAL ERROR] Missing required key: '{key_name}'\n"
+        f"Export it in your Colab cell before running main.py:\n"
+        f"os.environ['{key_name}'] = userdata.get('{key_name}')"
+    )
+
+
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+OPENROUTER_MODEL = "openrouter/free"
+
+OPENROUTER_API_KEY = load_required_key("OPENROUTER_API_KEY")
+HF_TOKEN = load_required_key("HF_TOKEN")
+
+# Set into environment variables for sub-libraries
+os.environ["OPENROUTER_API_KEY"] = OPENROUTER_API_KEY
+os.environ["HF_TOKEN"] = HF_TOKEN
 
 # Kokoro TTS Settings
 KOKORO_VOICES = [
@@ -73,12 +106,14 @@ WAN_MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 # Backward compatibility aliases
 SD_MODEL_ID = WAN_MODEL_ID
 
-IMAGE_WIDTH = 512
-IMAGE_HEIGHT = 768  # 9:16 Vertical aspect ratio
-WAN_NUM_FRAMES = 81
+
+IMAGE_WIDTH = 368
+IMAGE_HEIGHT = 640 
+WAN_NUM_FRAMES_FALLBACK = 33
 WAN_FPS = 16
 WAN_NUM_INFERENCE_STEPS = 30
 WAN_GUIDANCE_SCALE = 6.0
+FPS = 30
 
 # Backward compatibility aliases
 SD_STEPS = WAN_NUM_INFERENCE_STEPS
@@ -191,3 +226,10 @@ COLOR_PROFILES = [
         "font_size": 50,
     },
 ]
+#pool of background sounds
+BGM_POOL = ["cosmic1", "cosmic2",
+            "gen1", "gen2", "gen3",
+            "radio1", 
+            "rain1", "rain2",
+            "static1", "static2", 
+            "wind1"]

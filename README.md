@@ -1,69 +1,34 @@
-# 🚀 Keyless Reddit Shorts Automation Pipeline
+Horror Content Automation Engine
 
-A 100% local, offline, keyless Python automation pipeline that transforms Reddit stories into high-retention viral vertical Shorts (YouTube Shorts, TikTok, Instagram Reels).
 
-Optimized for mid-tier consumer hardware (NVIDIA RTX 3050 4GB/6GB VRAM, AMD Ryzen 7 CPU).
+A high-performance, asynchronous Python ETL and media-processing pipeline designed to automate end-to-end video production.
+The engine processes unstructured horror narratives, manages persistent pipeline states, coordinates multi-stage AI microservices, and programmatically renders vertical short-form media. Optimized to run locally on NVIDIA T4 GPUs, the pipeline executes hardware-bound diffusion rendering within strict VRAM limits
 
----
+ Architecture & Data Flow
 
-## 🏗 System Architecture & Pipeline Modules
+[ Data Ingestion ] ──► [ LLM Refinement ] ──► [ Parallel Media Services ] ──► [ Alignment & Rendering ]
+  scraper.py            agent_llm.py           ├── tts_engine.py                ├── captions.py
+  (Cleaning & State)    (Prompt & Script)      └── visuals.py                   └── assembler.py
 
-1. **`scraper.py` (Module A)**: Public JSON scraper for Reddit (`r/AITAH`, `r/TrueOffMyChest`). Zero API keys required. Filters NSFW, short text (<140 words), and media posts.
-2. **`agent_llm.py` (Module B)**: Connects to OpenRouter (`openrouter/free`). Transforms stories into hook-driven scripts with automatic `[PAUSE=1.0]` and `[PAUSE=0.5]` breathing tags.
-3. **`tts_engine.py` (Module C)**: Local Kokoro TTS pipeline (`24kHz`). Generates speech arrays and interleaves zero-padded NumPy arrays for exact millisecond pause injection.
-4. **`visuals.py` (Module D)**: Local Stable Diffusion 1.5 in `torch.float16` with `enable_attention_slicing()` and VRAM garbage collection to run safely on RTX 3050 VRAM. Generates 9:16 vertical frames.
-5. **`captions.py` (Module E)**: Local OpenAI Whisper base model transcribing audio with `word_timestamps=True` for word-by-word kinetic subtitle timing.
-6. **`assembler.py` (Module F)**: MoviePy v2 assembly engine with **Algorithmic Variance Engine** (randomized colors/fonts/offsets to bypass platform duplicate filters) and Ken Burns motion zoom.
-7. **`main.py`**: Central orchestrator with rich logging, CLI flags, and exception handling.
 
----
+Ingestion & State Tracking (scraper.py): Ingests raw narrative data from local datasets, cleans text artifacts, and updates a state machine (pipeline_state.json) to track processing status and episode continuity.
 
-## 🛠 Quick Start Guide
+Script Generation (agent_llm.py): Interacts with OpenRouter LLM endpoints via a 2-stage prompt structure to rewrite raw text into retention-optimized scripts with embedded timing markers ([PAUSE=X]).
 
-### 1. Prerequisites
-- **Python**: 3.10, 3.11, or 3.12
-- **GPU**: NVIDIA GPU with CUDA support (e.g., RTX 3050)
-- **OpenRouter API Key**: Optional/Free Tier supported (`OPENROUTER_API_KEY`)
+Parallel Asset Generation:Audio (tts_engine.py): Synthesizes 24kHz audio via Kokoro TTS, parsing timing tags into frame delays.  Visuals (visuals.py): Generates vertical 9:16 background scenes using Wan2.1-T2V-1.3B with memory-optimized VAE slicing and offloading.  Timestamp Synchronization (captions.py): Runs faster-whisper speech recognition against original scripts, using difflib.SequenceMatcher to correct OCR/transcription errors and map exact word-level time offsets. 
 
-### 2. Installation
-```bash
-# Clone or extract repository
-cd python_pipeline
+Programmatic Compositing (assembler.py): Assembles visual assets, audio streams, dynamic kinetic subtitles, and randomized UI parameters into a single MP4 via MoviePy v2.  
 
-# Create virtual environment
-python -m venv venv
+Key Technical FeaturesState Persistence & Fault Tolerance: 
+Uses local JSON state management to ensure multi-step execution recovery during pipeline failures.  
 
-# Activate virtual environment
-# Windows:
-venv\Scripts\activate
-# Linux/macOS:
-source venv/bin/activate
+Determinism Engine:
+Employs sequence matching algorithms (difflib) to eliminate AI transcription hallucinations in subtitle timing.  
 
-# Install PyTorch with CUDA support & dependencies
-pip install -r requirements.txt
-```
+Algorithmic Variance Engine: Randomizes font parameters, overlay colors, and layout positioning per video batch to avoid automated platform duplication detection.  
 
-### 3. Execution & Scene Selection
-The pipeline automatically rolls a random number of visual scene splits between 10 and 15 per run (`random.randint(10, 15)`).
+Low-Resource Neural Execution: 
+Implements VAE slicing, 8-bit quantization, local diffusion inference.  
 
-Run the full pipeline:
-```bash
-python main.py
-```
-
-Target a specific genre or subreddit:
-```bash
-python main.py --genre "Horror"
-python main.py --subreddit "nosleep"
-```
-
-Override scene count via CLI flag if desired:
-```bash
-python main.py --scenes 12
-```
-
----
-
-## ⚙ Hardware & VRAM Safety Tips (RTX 3050)
-- The pipeline uses `torch.float16` and `.enable_attention_slicing()` by default in `visuals.py`.
-- If running on a 4GB VRAM GPU, enable `self.pipe.enable_sequential_cpu_offload()` in `config.py`.
+Tech Stack & DependenciesLanguage:
+Python 3.10+Data Processing: pandas, openpyxl, json, difflib  AI & Machine Learning: torch, diffusers (Wan 1.3B), faster-whisper, OpenRouter API  Media & Synthesis: moviepy (v2), Kokoro TTS, ffmpeg

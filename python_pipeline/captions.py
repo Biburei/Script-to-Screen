@@ -256,4 +256,3 @@ if __name__ == "__main__":
     aligner = WhisperCaptionAligner()
     res = aligner.extract_word_timestamps("temp/sample_voice.wav", "I couldn't believe my eyes when I walked into the venue.")
     print("Extracted word timestamps snippet:", res[:5])
-

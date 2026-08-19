@@ -1,8 +1,9 @@
 """
-Module D: Wan 1.3B Local Text-to-Video Art Director (visuals.py)
-Generates sequential 9:16 vertical video clips (.mp4) locally using Wan 1.3B in FP16 precision.
+Module D: Wan 1.3B & Stable Diffusion Hybrid Visual Director (visuals.py)
+Generates sequential 9:16 vertical video clips (.mp4) locally using:
+- Wan 1.3B in FP16 for continuous motion/action scenes.
+- Stable Diffusion for static/non-continuous scenes (converted to MP4 clips).
 Optimized for Google Colab Free Tier (Tesla T4 GPU with 15GB VRAM & 12GB System RAM).
-Includes aggressive VRAM safety features (CPU model offloading, attention slicing, VAE tiling, GC).
 """
 import os
 import gc
@@ -13,14 +14,15 @@ import torch
 import numpy as np
 from PIL import Image
 
-# Hugging Face Diffusers Wan 1.3B imports
+# Hugging Face Diffusers imports
 try:
-    from diffusers import WanPipeline
-    from diffusers.utils import export_to_video
+    from diffusers import WanPipeline, StableDiffusionPipeline, export_to_video
 except ImportError:
     WanPipeline = None
+    StableDiffusionPipeline = None
     export_to_video = None
 
+import config
 from config import (
     WAN_MODEL_ID, IMAGE_WIDTH, IMAGE_HEIGHT, WAN_NUM_FRAMES_FALLBACK, WAN_FPS,
     WAN_NUM_INFERENCE_STEPS, WAN_GUIDANCE_SCALE, ASSETS_DIR, FPS,
@@ -33,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+# Fallback SD model if SD_MODEL_ID is not defined in config
+SD_MODEL_ID = getattr(config, "SD_MODEL_ID", "runwayml/stable-diffusion-v1-5")
+
 
 def export_frames_to_mp4(frames: List[Any], output_path: str, fps: int = WAN_FPS) -> str:
     """Utility to export video frames to MP4 using diffusers export_to_video or imageio fallback."""
@@ -40,7 +45,7 @@ def export_frames_to_mp4(frames: List[Any], output_path: str, fps: int = WAN_FPS
     try:
         if export_to_video is not None:
             export_to_video(frames, output_path, fps=fps)
-            logger.info(f"Wan 1.3B MP4 video clip saved via export_to_video: {output_path}")
+            logger.info(f"MP4 video clip saved via export_to_video: {output_path}")
             return output_path
     except Exception as e:
         logger.warning(f"diffusers.utils.export_to_video unavailable or failed ({e}). Falling back to imageio...")
@@ -54,16 +59,18 @@ def export_frames_to_mp4(frames: List[Any], output_path: str, fps: int = WAN_FPS
             else:
                 writer.append_data(np.array(frame))
         writer.close()
-        logger.info(f"Wan 1.3B MP4 video clip saved via imageio: {output_path}")
+        logger.info(f"MP4 video clip saved via imageio: {output_path}")
     except Exception as e:
         logger.error(f"Failed to encode video ({e}).")
     return output_path
 
 
 class WanArtDirector:
-    def __init__(self, model_id: str = WAN_MODEL_ID):
+    def __init__(self, model_id: str = WAN_MODEL_ID, sd_model_id: str = SD_MODEL_ID):
         self.model_id = model_id
-        self.pipe = None
+        self.sd_model_id = sd_model_id
+        self.pipe = None        # Wan 1.3B Video Pipeline
+        self.sd_pipe = None     # Stable Diffusion Image Pipeline
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     @staticmethod
@@ -80,21 +87,22 @@ class WanArtDirector:
         else:
             logger.info(f"[{step_label}] CUDA not available. Running on CPU/Mock mode.")
 
+    def _clean_memory(self):
+        """Helper to purge unused VRAM and RAM memory."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+
     def _init_pipeline(self):
         """
         Initialize Wan 1.3B Text-to-Video pipeline bypassing Colab's 12.7GB System RAM limit.
         """
-        def clean_memory():
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-
         if self.pipe is not None:
             return
 
         try:
-            clean_memory()
+            self._clean_memory()
             self.log_vram_usage("Pre Wan Load")
 
             if not torch.cuda.is_available():
@@ -122,7 +130,7 @@ class WanArtDirector:
                 device_map={"": 0} # Lock strictly to GPU 0
             )
 
-            clean_memory()
+            self._clean_memory()
 
             logger.info(f"Loading Wan 1.3B pipeline '{self.model_id}'...")
             self.pipe = WanPipeline.from_pretrained(
@@ -133,7 +141,7 @@ class WanArtDirector:
                 low_cpu_mem_usage=True
             )
 
-            clean_memory()
+            self._clean_memory()
 
             self.pipe.to("cuda")
 
@@ -150,8 +158,43 @@ class WanArtDirector:
             logger.info("Wan 1.3B Pipeline initialized successfully!")
 
         except Exception as e:
-            clean_memory()
+            self._clean_memory()
             logger.warning(f"Wan 1.3B pipeline load failed ({e}). Procedural video fallbacks will be used.")
+
+    def _init_sd_pipeline(self):
+        """
+        Initialize Stable Diffusion pipeline for generating static scene images.
+        """
+        if self.sd_pipe is not None:
+            return
+
+        try:
+            self._clean_memory()
+            self.log_vram_usage("Pre SD Load")
+
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA GPU is required to run Stable Diffusion.")
+
+            if StableDiffusionPipeline is None:
+                raise ImportError("diffusers package with StableDiffusionPipeline is required.")
+
+            logger.info(f"Loading Stable Diffusion pipeline '{self.sd_model_id}'...")
+            self.sd_pipe = StableDiffusionPipeline.from_pretrained(
+                self.sd_model_id,
+                torch_dtype=torch.float16,
+                use_safetensors=True
+            )
+            self.sd_pipe.to("cuda")
+
+            if hasattr(self.sd_pipe, "enable_attention_slicing"):
+                self.sd_pipe.enable_attention_slicing()
+
+            self.log_vram_usage("Post SD Load")
+            logger.info("Stable Diffusion Pipeline initialized successfully!")
+
+        except Exception as e:
+            self._clean_memory()
+            logger.warning(f"Stable Diffusion pipeline load failed ({e}). Procedural fallbacks will be used.")
 
     def create_scene_prompts(self, script_text: str, num_scenes: int = None, raw_tags: str = "") -> List[Dict[str, Any]]:
         """
@@ -180,7 +223,7 @@ class WanArtDirector:
 
             full_prompt = (
                 f"{truncated_core}, {dynamic_master_style}, "
-                f"cinematic 35mm horror video footage, dynamic organic movement, 8k resolution, photorealistic horror atmospheric lighting"
+                f"cinematic 35mm horror footage, dynamic organic movement, 8k resolution, photorealistic horror atmospheric lighting"
             )
 
             scene_prompts.append({
@@ -198,16 +241,17 @@ class WanArtDirector:
         num_scenes: int = None,
         output_dir: str = str(ASSETS_DIR),
         raw_tags: str = "",
-        audio_duration: float = None  # <--- Clean numerical input
+        audio_duration: float = None
       ) -> List[str]:
         """
-        Generate sequential 9:16 vertical MP4 video clips using Wan 1.3B model.
-        Dynamically calculates frame counts per clip based on total audio duration.
+        Generate sequential 9:16 vertical MP4 video clips.
+        - Continuous action scenes -> Generated with Wan 1.3B Video model.
+        - Non-continuous scenes -> Generated as a static image via Stable Diffusion & converted to MP4.
         """
         if not num_scenes:
             num_scenes = get_random_num_scenes()
 
-        # --- APPLY THE MATH DIRECTLY ---
+        # --- CALCULATE FRAME COUNT ---
         effective_frames = WAN_NUM_FRAMES_FALLBACK
         if audio_duration and audio_duration > 0 and num_scenes > 0:
             scene_duration = audio_duration / num_scenes
@@ -217,34 +261,35 @@ class WanArtDirector:
             k = round((target_frames - 1) / 4)
             effective_frames = (4 * max(1, k)) + 1
             
-            # --- HARD CAP TO PREVENT OOM ON T4 (Max 81 frames per clip) ---
+            # Hard cap to prevent OOM on T4 GPU
             MAX_SAFE_FRAMES = 81
             if effective_frames > MAX_SAFE_FRAMES:
                 logger.warning(f"⚠️ Calculated frames ({effective_frames}) exceed T4 VRAM limit. Capped at {MAX_SAFE_FRAMES}.")
                 effective_frames = MAX_SAFE_FRAMES
             
-            logger.info(f"Visuals Frame Calc: Total Audio={audio_duration:.2f}s | Scene Duration={scene_duration:.2f}s | Wan Frames={effective_frames}")
+            logger.info(f"Visuals Frame Calc: Total Audio={audio_duration:.2f}s | Scene Duration={scene_duration:.2f}s | Frames/Clip={effective_frames}")
         else:
             logger.info(f"No audio duration provided. Using fallback frame count: {WAN_NUM_FRAMES_FALLBACK}")
 
-        self._init_pipeline()
         os.makedirs(output_dir, exist_ok=True)
-
         scene_prompts = self.create_scene_prompts(script_text, num_scenes, raw_tags)
         output_files = []
         i = 0
         n = len(scene_prompts)
 
-        logger.info(f"Generating {n} vertical Wan 1.3B video clips (Resolution: {IMAGE_WIDTH}x{IMAGE_HEIGHT}, Frames/clip: {effective_frames})...")
+        logger.info(f"Generating {n} visual clips (Resolution: {IMAGE_WIDTH}x{IMAGE_HEIGHT}, Frames/clip: {effective_frames})...")
 
         while i < n:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
+            self._clean_memory()
             frame_data = scene_prompts[i]
             scene_type = frame_data.get("scene_type", "continuous_action")
 
+            # ==========================================================
+            # PATH 1: CONTINUOUS ACTION -> WAN 1.3B TEXT-TO-VIDEO
+            # ==========================================================
             if scene_type == "continuous_action":
+                self._init_pipeline()
+
                 action_run = []
                 while i < n and scene_prompts[i].get("scene_type") == "continuous_action":
                     action_run.append(scene_prompts[i])
@@ -266,7 +311,7 @@ class WanArtDirector:
                             prompt=combined_prompt,
                             height=IMAGE_HEIGHT,
                             width=IMAGE_WIDTH,
-                            num_frames=effective_frames,  # <--- Using dynamic frames here
+                            num_frames=effective_frames,
                             num_inference_steps=WAN_NUM_INFERENCE_STEPS,
                             guidance_scale=WAN_GUIDANCE_SCALE
                         ).frames[0]
@@ -281,31 +326,42 @@ class WanArtDirector:
                     fallback = self._generate_procedural_video_clip(scene_id, combined_prompt, out_video_path, effective_frames)
                     output_files.append(fallback)
 
+            # ==========================================================
+            # PATH 2: NON-CONTINUOUS ACTION -> STABLE DIFFUSION IMAGE
+            # ==========================================================
             else:
+                self._init_sd_pipeline()
+
                 scene_id = frame_data["scene_id"]
                 prompt = frame_data["prompt"]
-                out_video_path = os.path.join(output_dir, f"frame_{scene_id}.mp4")
+                negative_prompt = frame_data.get("negative_prompt", "")
+                out_video_path = os.path.join(output_dir, f"frame_{scene_id}_sd.mp4")
 
                 logger.info(f"\n==========================================")
-                logger.info(f"Processing Scene ID: {scene_id} | Type: {scene_type}")
+                logger.info(f"Processing Non-Continuous Scene ID: {scene_id} | Type: {scene_type}")
                 logger.info(f"Prompt: '{prompt[:150]}...'")
                 logger.info(f"==========================================")
 
-                if self.pipe is not None:
+                if self.sd_pipe is not None:
                     try:
-                        video_frames = self.pipe(
+                        logger.info(f"Generating image with Stable Diffusion ({IMAGE_WIDTH}x{IMAGE_HEIGHT})...")
+                        sd_image = self.sd_pipe(
                             prompt=prompt,
+                            negative_prompt=negative_prompt,
                             height=IMAGE_HEIGHT,
                             width=IMAGE_WIDTH,
-                            num_frames=effective_frames,  # <--- Using dynamic frames here
-                            num_inference_steps=WAN_NUM_INFERENCE_STEPS,
-                            guidance_scale=WAN_GUIDANCE_SCALE
-                        ).frames[0]
+                            num_inference_steps=30,
+                            guidance_scale=7.5
+                        ).images[0]
 
+                        # Replicate static image across effective_frames to build an MP4 video clip
+                        logger.info(f"Encoding SD image to MP4 clip with {effective_frames} frames...")
+                        video_frames = [sd_image] * effective_frames
                         export_frames_to_mp4(video_frames, out_video_path, fps=WAN_FPS)
                         output_files.append(out_video_path)
+
                     except Exception as e:
-                        logger.error(f"Wan 1.3B generation failed ({e}). Falling back to procedural clip.")
+                        logger.error(f"Stable Diffusion generation failed ({e}). Falling back to procedural clip.")
                         fallback = self._generate_procedural_video_clip(scene_id, prompt, out_video_path, effective_frames)
                         output_files.append(fallback)
                 else:
@@ -316,12 +372,11 @@ class WanArtDirector:
 
         return output_files
 
-    def _generate_procedural_video_clip(self, scene_id: int, prompt_text: str, out_path: str, num_frames: int = 33) -> str:
-        """Generates a high-quality procedural dark horror MP4 fallback video clip when GPU model is offline."""
-        logger.info(f"Building procedural fallback video clip for scene {scene_id}...")
+    def _generate_procedural_video_clip(self, scene_id: int, prompt_text: str, out_path: str, num_frames: int = WAN_NUM_FRAMES_FALLBACK) -> str:
+        """Generates a high-quality procedural dark horror MP4 fallback video clip when GPU models fail."""
+        logger.info(f"Building procedural fallback video clip for scene {scene_id} ({num_frames} frames)...")
         try:
             frames = []
-            num_frames = WAN_NUM_FRAMES_FALLBACK
             for i in range(num_frames):
                 img = Image.new("RGB", (IMAGE_WIDTH, IMAGE_HEIGHT), color=(12, 10, 18))
                 frames.append(img)
